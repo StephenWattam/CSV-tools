@@ -1,12 +1,10 @@
 #! /usr/bin/env ruby
 #   TODO
 #
-# 2. Better command line option handling
 # 3. The ability to control output "select rhs.field lhs.field"
 # 4. More efficient disk storage systems (+my/sql/ite)
 # 5. Threading on disk reads
 # 6. ETAs and better output
-# 7. Support for compound keys
 #
 
 
@@ -220,11 +218,6 @@ private
   def build_index
     say "Building index..."
 
-#     # Progress bar...
-#     pbar = CLIProgressBar.new(count, true, true)
-#     pbar.render_thread(0.1)
-#     count = 0
-
     # Get size in bytes, so we know when we've hit the end.
     file_size = File.size(@filename)
     CSV.open(@filename, {:headers => true}) do |csvin|
@@ -245,13 +238,10 @@ private
         # TODO: ensure random access of the cache is possible
         $stderr.puts "WARNING: Key at byte #{line_start} of #{@filename} collides with key at byte #{@cache[key]}." if @cache[key]
         @cache[key] = line_start
-        
-        # pbar.update_abs(count+=1)
       end
     end
 
     
-    # pbar.stop_thread
     say "Finished building index"
   end
   
@@ -269,10 +259,6 @@ private
       max_lengths[k]    = 0   # length of the field
       prefix_tables[k]  = []  # position-usage measure
     }
-
-    # # Progress bar
-    # pbar      = CLIProgressBar.new(count, true, true)
-    # pbar.render_thread(0.1)
 
     # Enable garbage collector stress mode, to keep memory clean
     GC.stress = true if LOW_MEMORY 
@@ -296,7 +282,6 @@ private
       }
 
       # count records
-      # pbar.update_abs(count += 1)
       print "\rLine: #{count} " if (count+=1) % OUTPUT_DIVISOR == 0
     end
     print "\n"
@@ -310,10 +295,6 @@ private
     # And turn it off again
     GC.stress = false  if LOW_MEMORY 
     GC.start           if STRICT_GC
-
-    # # Stop the progress bar
-    # pbar.stop_thread
-    # print "\n"
 
     say "Computing minimum size (2/2)..."
     # For each key, compute the minimal size from the prefix table
@@ -353,10 +334,7 @@ private
   def build_count
     say "Counting items..."
     count = 0
-    # pbar = CLISpinBar.new(true)
-    # pbar.set_status("Counting (#{@filename})...")
-    # pbar.render_thread(0.1)
-
+ 
     # Enable garbage collector stress mode, to keep memory clean
     GC.stress = true if LOW_MEMORY 
 
@@ -368,9 +346,6 @@ private
     # And turn it off again
     GC.stress = false  if LOW_MEMORY 
     GC.start           if STRICT_GC
-
-    # pbar.stop_thread
-    # print "\n"
 
     say "Count complete."
     @count = count
@@ -432,11 +407,7 @@ module MergePolicy
     end
   end
 
-  
-  # TODO FIXME!
-  # This should check that the LHS has NO DUPLICATE entries in the keys
-  # If it does, only the first will be taken (i.e. no error).
-  # XXX XXX XXX
+
   class LeftMerge < Merge
     def to_s
       "Left Merge"
@@ -491,13 +462,10 @@ module MergePolicy
 end
 
 
-def print_usage
-end
-
 def process_commandline_args
   # Parse command line args
   if ARGV.length < 5 then
-    puts "USAGE: #{__FILE__} LHS RHS OUT MERGE_POLICY CACHE lkey1 lkey2 lkey3... -- rkey1 rkey2 rkey3..."
+    $stderr.puts "USAGE: #{__FILE__} LHS RHS OUT MERGE_POLICY CACHE lkey1 lkey2 lkey3... -- rkey1 rkey2 rkey3..."
     exit(1)
   end
 
@@ -603,10 +571,6 @@ CSV.open(CSV_OUT, 'w') do |out_csv|
 
   
   puts "Building output CSV..."
-  # pbar = CLIProgressBar.new(lhs.count, true, true)
-  # pbar.render_thread(0.1)
-  # count = 0
-
 
   # Open a transaction for the rhs file,
   # in readiness for reading from keys
@@ -630,14 +594,9 @@ CSV.open(CSV_OUT, 'w') do |out_csv|
       # Merge according to policy and output
       out_csv << merge.merge_line(lhs_vals, rhs_vals) if merge.accept_line?(lhs_vals, rhs_vals)
 
-      # pbar.update_abs(count+=1)
       print "\rLine: #{count} " if (count+=1) % OUTPUT_DIVISOR == 0
     end
   }
-
-
-  # pbar.stop_thread
-  # print "\n"
 end
 print "\n"
 
