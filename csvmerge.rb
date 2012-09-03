@@ -1,4 +1,17 @@
 #! /usr/bin/env ruby
+#   TODO
+#
+# 1. Structure using classes
+# 2. Better command line option handling
+# 3. Merge policies that are able to better select data
+# 4. More efficient disk storage systems (+my/sql/ite)
+# 5. Threading on disk reads
+# 6. ETAs and better output
+# 7. Support for compound keys
+#
+
+
+
 #
 # Large CSV merging app.  uses an index construction method to merge CSVs in excess of memory size
 require 'csv'
@@ -10,133 +23,9 @@ LOW_MEMORY = false    # Keep memory usage to an absolute minimum (not recommende
 STRICT_GC = true      # Garbage collect after large operations (recommended) 
 
 
-def count_items(csv)
-  count = 0
-  pbar = CLISpinBar.new(true)
-  pbar.set_status("Counting (#{csv})...")
-  pbar.render_thread(0.1)
-
-  # Enable garbage collector stress mode, to keep memory clean
-  GC.stress = true if LOW_MEMORY 
-
-  count = CSV.read(csv, {:headers => true}).length
-  # CSV.foreach(csv, {:headers => true}) do |csvin|
-  #   count += 1
-  # end
-
-  # And turn it off again
-  GC.stress = false  if LOW_MEMORY 
-  GC.start           if STRICT_GC
 
 
 
-  pbar.stop_thread
-  print "\n" 
-  return count
-end
-
-def get_field_list(csv_filename)
-  csv = CSV.open(csv_filename, 'r', {:headers => true} )#CSV_OPTIONS)
-  # Shift once to get past the header, if it exists
-  csv.shift()
-  row = csv.shift()
-
-  list = row.headers
-  csv.close
-
-  list.each_index{ |i|
-    list[i] = list[i].to_s
-  }
-  return list
-end
-
-
-def get_prefix_length(csv, key, csv_size)
-  puts "Determining index block size for #{csv}:#{key}..."
-  records = 0
-  prefix = []
-  pbar = CLIProgressBar.new(csv_size, true, true)
-  pbar.render_thread(0.1)
-
-  # Enable garbage collector stress mode, to keep memory clean
-  GC.stress = true if LOW_MEMORY 
-
-  CSV.foreach(csv, {:headers => true}) do |csvin|
-    val = csvin.field(key).to_s
-
-    # For each position, for each char, keep a count.
-    pos = 0
-    val.each_char{|c|
-      prefix[pos]     = {} if not prefix[pos]
-      prefix[pos][c]  = 0  if not prefix[pos][c]
-      prefix[pos][c] += 1
-      pos            += 1
-    }
-
-    # count records
-    records += 1
-    pbar.update_abs(records)
-  end
-
-
-  # And turn it off again
-  GC.stress = false  if LOW_MEMORY 
-  GC.start           if STRICT_GC
-
-
-  pbar.stop_thread
-  print "\n"
-  rcount_size = [records].pack("l").size
-
-  # From the hash of prefixes, determine the shortest possible prefix
-  key_size = 0
-  prefix.each{|chars|
-    key_size += 1
-    max = 1
-    chars.each{|k, v| max = v if v > max }
-    break if max == 1 # Each char is at this point used only once
-  }
-  throw "Cannot merge a CSV with no key values (there is nothing to merge on)" if key_size == 0
-
-  return key_size, rcount_size
-end
-
-
-def build_index(cache, csv, key, key_size, csv_size)
-  puts "Building index"
-
-  # Progress bar...
-  pbar = CLIProgressBar.new(csv_size, true, true)
-  pbar.render_thread(0.1)
-  count = 0
-
-  # Get size in bytes, so we know when we've hit the end.
-  file_size = File.size(csv)
-  CSV.open(csv, {:headers => true}) do |csvin|
-
-    # Get byte offset
-    line_start = csvin.tell
-
-    # Then read line
-    while((line_start = csvin.tell) < file_size) do
-
-      # Load the line
-      val = csvin.shift()
-
-      # Load the key up to the key size only
-      val = val.field(key).to_s[0..key_size]
-      
-      # Save the file offset
-      cache[val] = line_start
-      
-      #puts "#{val} => #{csvin.tell}"
-      count += 1
-      pbar.update_abs(count)
-    end
-  end
-  pbar.stop_thread
-  print "\n"
-end
 
 module CacheMethods
   class Cache
@@ -169,6 +58,10 @@ module CacheMethods
     # and/or clean up RAM
     def cleanup
     end
+
+
+
+
   end
 
   class MemoryCache < Cache
@@ -185,7 +78,6 @@ module CacheMethods
     end
   end
 
-  # TODO: use multiple adds per transaction
   class DiskCache < Cache
     def initialize(filename="/tmp/csvmerge.tmp", transaction_size=10000)
       require 'pstore'
@@ -232,137 +124,443 @@ module CacheMethods
   end
 end
 
-# TODO
-module MergePolicy
-  class LeftMerge
+# Provides a wrapper around CSV
+# that will perform various checks and descriptive statistical ops.
+class KeyValueCSV 
+
+  attr_reader :keys, :filename
+
+  def initialize(filename, keys)
+    @filename = filename
+  
+    # Load keys
+    @keys = keys
+    # Check all the keys are there
+    @keys.each{|k|
+      raise "Key is not in fields list" if not fields.include?(k)
+    }
+  end
+
+
+  def minimal_keys
+    compute_minimal_keys if not @minimal_keys
+    @minimal_keys
+  end
+
+  # Total size of the key
+  def key_size
+    compute_minimal_keys if not @key_length
+    @key_length 
+  end
+
+  # Retrieve a key from a line
+  def get_minimal_key(line)
+    compute_minimal_keys if not @minimal_keys
+   
+    str = ""
+    minimal_keys.each{|k, size|
+      str += line.field(k).to_s[0..size]
+    }
+    return str
+  end
+
+  def fields
+    build_fields if not @fields
+    @fields
+  end
+
+  def count
+    build_count if not @count
+    @count
+  end
+
+  def to_s
+    return "#{@filename}"
+  end
+
+  def cache=(cache)
+    raise "Cannot set cache when seeking" if @handle
+    @cache = cache
+    build_index
+  end
+ 
+  def seek_retrieval(&block)
+    File.open(@filename, 'r') do |handle|
+      @handle = handle
+      yield
+      @handle = nil
+    end
+  end
+
+  def []=(k, v)
+    raise "No Cache!" if not @cache
+    @cache[k] = v
+  end
+
+  def [](k)
+    raise "Cannot retrieve from cache if not seeking" if not @handle
+    raise "No Cache" if not @cache
+
+    # Seek to the location in the cache and return a line
+    if seek_to = @cache[k] then
+      @handle.seek(seek_to)
+      return CSV.parse_line(@handle.readline, {:headers => fields}).to_hash
+    else
+      return nil
+    end
+  end
+
+private
+    
+  
+  # Construct an index.  Should not need to be
+  # overidden
+  def build_index
+    puts "Building index for #{@filename}"
+
+    # Progress bar...
+    pbar = CLIProgressBar.new(count, true, true)
+    pbar.render_thread(0.1)
+    count = 0
+
+    # Get size in bytes, so we know when we've hit the end.
+    file_size = File.size(@filename)
+    CSV.open(@filename, {:headers => true}) do |csvin|
+
+      # Get byte offset
+      line_start = csvin.tell
+
+      # Then read line
+      while((line_start = csvin.tell) < file_size) do
+
+        # Load the line
+        line = csvin.shift()
+
+        # Load the key up to the key size only
+        key = get_minimal_key(line)
+        
+        # Save the file offset
+        # TODO: ensure random access of the cache is possible
+        $stderr.puts "WARNING: Key on line #{count} of #{@filename} collides with key at byte #{@cache[key]}." if @cache[key]
+        @cache[key] = line_start
+        
+        pbar.update_abs(count+=1)
+      end
+    end
+    pbar.stop_thread
+    print "\n"
   end
   
-  class RightMerge
-  end
   
-  class InnerMerge
+  def compute_minimal_keys
+    @minimal_keys = {}
+
+
+    puts "Determining index block size for #{@filename}..."
+
+    puts "Building prefix tables..."
+    # Set up per-key prefix table and max length measure
+    prefix_tables = {}
+    max_lengths   = {}
+    @keys.each{ |k| 
+      max_lengths[k]    = 0   # length of the field
+      prefix_tables[k]  = []  # position-usage measure
+    }
+
+    # Progress bar
+    pbar      = CLIProgressBar.new(count, true, true)
+    pbar.render_thread(0.1)
+
+    # Enable garbage collector stress mode, to keep memory clean
+    GC.stress = true if LOW_MEMORY 
+
+    count = 0
+    CSV.foreach(@filename, {:headers => true}) do |csvin|
+      prefix_tables.each{ |key, prefix|
+        val = csvin.field(key).to_s
+
+        # For each position, for each char, keep a count.
+        pos = 0
+        val.each_char{ |c|
+          prefix[pos]     = {} if not prefix[pos]
+          prefix[pos][c]  = 0  if not prefix[pos][c]
+          prefix[pos][c] += 1
+          pos            += 1
+        }
+
+        # Check on the maximum length for this field
+        max_lengths[key] = pos if max_lengths[key] < pos
+      }
+
+      # count records
+      pbar.update_abs(count += 1)
+    end
+
+
+    # And turn it off again
+    GC.stress = false  if LOW_MEMORY 
+    GC.start           if STRICT_GC
+
+    # Stop the progress bar
+    pbar.stop_thread
+    print "\n"
+
+    puts "Computing minimum size for #{self}."
+    # For each key, compute the minimal size from the prefix table
+    prefix_tables.each{|key, prefix|
+
+      # From the hash of prefixes, determine the shortest possible prefix
+      key_size = 0
+      prefix.each{|chars|
+        key_size  += 1
+        max        = 1
+        # puts "prefix for field #{key}, filename #{@filename}: position #{key_size} sees #{prefix[key_size-1].size} #{chars.size} different chars."
+        chars.each{|k, v|  max = v if v > max  }
+        break if max == 1 # Each char is at this point used only once
+      }
+      throw "No key values for field #{key} in #{@filename}" if key_size == 0
+
+      # If the final character position has only seen one character
+      # then this field is NOT unique
+      # non_unique_fields << key if prefix[key_size-1].length == 1
+      if prefix[key_size-1].length == 1 then
+        puts "WARNING: field '#{key}' in #{@filename} is uninformative, with an entropy of 0."
+      end
+
+      # Write the minimal key size for this key
+      @minimal_keys[key] = key_size 
+    }
+
+    # Lastly, compute total key length
+    @key_length = minimal_keys.values.inject(0, :+)
   end
-  
-  class OuterMerge
+
+  def build_count
+    count = 0
+    pbar = CLISpinBar.new(true)
+    pbar.set_status("Counting (#{@filename})...")
+    pbar.render_thread(0.1)
+
+    # Enable garbage collector stress mode, to keep memory clean
+    GC.stress = true if LOW_MEMORY 
+
+    count = CSV.read(@filename, {:headers => true}).length
+    # CSV.foreach(@filename, {:headers => true}) do |csvin|
+    #   count += 1
+    # end
+
+    # And turn it off again
+    GC.stress = false  if LOW_MEMORY 
+    GC.start           if STRICT_GC
+
+    pbar.stop_thread
+    print "\n"
+
+    @count = count
   end
-  
-  class CustomMerge
+
+  def build_fields
+    csv = CSV.open(@filename, 'r', {:headers => true} )
+    # Shift once to get past the header, if it exists
+    csv.shift()
+    row = csv.shift()
+
+    # Then list headers and close
+    list = row.headers
+    csv.close
+
+    # Ensure they're strings
+    @fields = list.map!{|x| x.to_s }
   end
+
 end
 
 
-
-#(merging A with B)
-#1) min_prefix from file A   = {}
-#2) write to file/hash C     = { "prefix:line" padded to n bytes } (or store this in RAM)
-#3) open A, B, C             = { Read B, binary search prefix in C, fseek/read data from line 'line' in A }
-#4) write shit into D (merged file)
-
-
-lhs_csv = ARGV[0]
-rhs_csv = ARGV[1]
-csvout  = "out.csv"
-
-# TODO: support compound keys
-key1 = ARGV[2]
-key2 = ARGV[3]
-
+# TODO
 # The merging algorithm to use.
 # TODO: use MergePolicy::whatever.
 # Merging left with add columns from rhs_csv to lhs_csv, where keys match
 # Merging right will add columns from lhs_csv to rhs_csv, where keys match
 # Merging inner will add columns from lhs_csv and rhs_csv, merge where keys match and output BOTH, with empty values
-policy = ARGV[4] ? ARGV[4] : "lmerge"
-
-puts "Merging #{lhs_csv} into #{rhs_csv} with policy #{policy}"
 
 
-puts "Finding fields in each"
-lhs_fields      = get_field_list(lhs_csv)
-rhs_fields      = get_field_list(rhs_csv)
-output_fields   = (lhs_fields + rhs_fields).uniq
-puts "LHS: #{lhs_fields.join(', ')}"
-puts "RHS: #{rhs_fields.join(',')}"
-puts "Output: #{output_fields.join(', ')}"
+module MergePolicy
+  class Merge
+    def initialize(lhs, rhs)
+      @lhs, @rhs  = lhs, rhs
+    end
 
-puts "Counting records in each (and validating CSV)"
-lhs_records = count_items(lhs_csv)
-rhs_records = count_items(rhs_csv)
-puts "#{lhs_csv} (LHS): #{lhs_records} \n#{rhs_csv} (RHS): #{rhs_records}"
+    # Output fields as they will be, i.e. for the header.
+    def fields
+      @lhs.fields + (@rhs.fields - @rhs.keys).map{|x| "rhs.#{x}"}
+    end
 
+    def to_s
+      "Merge"
+    end
 
+    def fields
+      (@rhs.fields + @lhs.fields).uniq
+    end
 
-# build minimal index for the key we're merging with
-# TODO: change rhs_csv/key2 with source/dest syntax so the various merge styles work
-puts "Building index for LHS (#{lhs_csv}:#{key1})..."
-key_size, rcount_size   = get_prefix_length(lhs_csv, key1, lhs_records)
-block_size              = key_size + rcount_size
-puts "Block size is #{block_size}, with #{lhs_records} records meaning #{(((block_size + rcount_size)*lhs_records)/1024/1024).round(2)}MB needed for index (less for RAM)."
-puts "Type 'm' to use memory, or 'd' to use disk"
-cache = ""
-if($stdin.getc == "m") then
-  puts "Using memory!"
-  puts "Building cache"
-  cache = CacheMethods::MemoryCache.new
-else
-  puts "Using disk!"
-  cache = CacheMethods::DiskCache.new
+    # Merge a single line
+    def merge_line(lhs_line, rhs_line)
+      line = []
+
+      # Add all left hand side items
+      @rhs.fields.each{ |f| line << rhs_line[f] }
+      # and only non-key fields from the RHS
+      (@lhs.fields - @lhs.keys).each{|f| line << lhs_line[f] }
+
+      return line
+    end
+  end
+
+  
+  # TODO FIXME!
+  # This should check that the LHS has NO DUPLICATE entries in the keys
+  # If it does, only the first will be taken (i.e. no error).
+  # XXX XXX XXX
+  class LeftMerge < Merge
+    def to_s
+      "Left Merge"
+    end
+
+    def accept_line?(lhs_line, rhs_line)
+      # Left outer joins returns ALL from LHS, even if RHS is empty
+      true
+    end
+  end
+  
+  class InnerMerge < Merge
+    def to_s
+      "Inner Merge"
+    end
+
+    def accept_line?(lhs_line, rhs_line)
+      # Inner join returns rows ONLY if both have data
+      (not lhs_line.empty?) and (not rhs_line.empty?)
+    end
+  end
+ 
+  # TODO
+  #
+  # An outer join will output even if
+  # one half of the key is missing,
+  # but match up what it can
+#  class OuterMerge < Merge
+#    def to_s
+#      "Outer Merge"
+#    end
+#
+#    # Accept ALL, in fact, generate some.
+#    # currently impossible using this algorithm
+#    def accept_line?(lhs_line, rhs_line)
+#    end
+#  end
+ 
+  # TODO:
+  # 
+  # A cross join is the cartesian product of
+  # both files.
+  #
+  # Currently not possible with the framework as it is
+#  class CrossMerge < Merge
+#    def to_s
+#      "Custom Merge"
+#    end
+#    def accept_line?(lhs_line, rhs_line)
+#    end
+#  end
 end
 
 
-# Build an index for the LHS CSV file using the cache we just created
-build_index(cache, lhs_csv, key1, key_size, lhs_records)
+
+
+# TODO: support compound keys from the command line
+lhs     = KeyValueCSV.new(ARGV[0], [ARGV[2]])
+rhs     = KeyValueCSV.new(ARGV[1], [ARGV[3]])
+merge   = eval("MergePolicy::#{ARGV[4] ? ARGV[4] : 'LeftMerge'}.new(lhs, rhs)")
+
+
+puts "\nMerging #{lhs} into #{rhs} with policy #{merge}"
+
+
+
+puts "\nFinding fields in each"
+puts "   LHS: #{lhs.fields.join(', ')}"
+puts "   RHS: #{rhs.fields.join(', ')}"
+puts "Output: #{merge.fields.join(', ')}"
+
+
+
+puts "\nCounting records in each (and validating CSV)"
+puts "#{lhs} (LHS): #{lhs.count}"
+puts "#{rhs} (RHS): #{rhs.count}"
+
+
+puts "Finding Minimal Key Lengths for #{rhs}..."
+rhs.minimal_keys.each{|k, v|
+  puts " KEY #{rhs}: #{k} => #{v}"
+}
+
+
+puts "Key size is #{rhs.key_size}B, with #{rhs.count} records this means #{(((rhs.key_size + [rhs.count].pack('l').size)*rhs.count)/1024/1024).round(2)}MB needed for index."
+puts "Type 'm' to use memory, or 'd' to use disk"
+cache = ""
+
+if($stdin.getc == "m") then
+  puts "Using memory!"
+  cache = CacheMethods::MemoryCache
+else
+  puts "Using disk!"
+  cache = CacheMethods::DiskCache
+end
+rhs.cache = cache.new
+
 
 
 ############## Perform Merge #################################
+CSV.open(CSV_OUT, 'w') do |out_csv|
+  out_csv << merge.fields
 
-puts "Building output CSV"
-pbar = CLIProgressBar.new(rhs_records, true, true)
-pbar.render_thread(0.1)
-count = 0
+  
+  puts "Building output CSV..."
+  pbar = CLIProgressBar.new(lhs.count, true, true)
+  pbar.render_thread(0.1)
+  count = 0
 
-CSV.open(csvout, 'w') do |out_csv|
-  out_csv << output_fields
 
-  # The one we have the index for
-  lhs_csv = File.open(lhs_csv, 'r')
+  # Open a transaction for the rhs file,
+  # in readiness for reading from keys
+  rhs.seek_retrieval{
 
     # The one we don't have the index for
-    CSV.foreach(rhs_csv, {:headers => true}) do |rhs_row|
-      val         = rhs_row.field(key2).to_s[0..key_size]
-      #puts "Key field val: #{val}"
-      rhs_vals    = rhs_row.to_hash
+    CSV.foreach(lhs.filename, {:headers => true}) do |lhs_row|
 
+      # Generate a key from the row
+      key         = rhs.get_minimal_key(lhs_row)
+    
+      # Look up the value from the LHS cache
+      # This uses file seeking, so is quickish
+      # and low on memory
+      rhs_vals    = rhs[key] || {}
 
-      seek_offset   = cache[val]
-      lhs_csv.seek(seek_offset)
-      # puts "Seeking to #{seek_offset}"
-      lhs_vals      = CSV.parse_line(lhs_csv.readline, {:headers => lhs_fields}).to_hash
-      # puts "Seeking to #{seek_offset}, line: #{lhs_vals}"
+        
+      # Ensure the RHS vals are in hash form 
+      lhs_vals    = lhs_row.to_hash
 
-      # TODO: manage the behaviour of overwrites in the two hashes
-      out_vals = lhs_vals.merge(rhs_vals)
-      out_line = []
-      output_fields.each{|f| 
-        #puts "outputting #{f} from #{out_vals}"
-        out_line << out_vals[f] }
-      out_csv << out_line
+      # Merge according to policy and output
+      out_csv << merge.merge_line(lhs_vals, rhs_vals) if merge.accept_line?(lhs_vals, rhs_vals)
 
-      count += 1
-      pbar.update_abs(count)
+      pbar.update_abs(count+=1)
     end
-  lhs_csv.close
+  }
+
+
+  pbar.stop_thread
+  print "\n"
 end
-pbar.stop_thread
-print "\n"
-
-
-
-# Remove the cache file if one was used.
-puts "Cleaning up cache"
-cache.cleanup
-cache = nil
-GC.start
 
 
 # End
