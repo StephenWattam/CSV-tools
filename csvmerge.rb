@@ -1,9 +1,8 @@
 #! /usr/bin/env ruby
 #   TODO
 #
-# 1. Structure using classes
 # 2. Better command line option handling
-# 3. Merge policies that are able to better select data
+# 3. The ability to control output "select rhs.field lhs.field"
 # 4. More efficient disk storage systems (+my/sql/ite)
 # 5. Threading on disk reads
 # 6. ETAs and better output
@@ -19,9 +18,9 @@ require './lib/progress_bar.rb'
 CSV_OUT = "out.csv"
 
 
-LOW_MEMORY = false    # Keep memory usage to an absolute minimum (not recommended unless you have almost no RAM)
-STRICT_GC = true      # Garbage collect after large operations (recommended) 
-
+LOW_MEMORY      = false     # Keep memory usage to an absolute minimum (not recommended unless you have almost no RAM)
+STRICT_GC       = true      # Garbage collect after large operations (recommended) 
+OUTPUT_DIVISOR  = 512       # print the line every n lines.  Should be a largeish and fast-to-divide number, ie a power of 2
 
 
 
@@ -134,13 +133,16 @@ class KeyValueCSV
     @filename = filename
   
     # Load keys
-    @keys = keys
+    @keys = (keys.empty?) ? fields : keys
     # Check all the keys are there
     @keys.each{|k|
       raise "Key is not in fields list" if not fields.include?(k)
     }
   end
 
+  def say(arg)
+    puts "[#{File.basename(@filename)}] #{arg}"
+  end
 
   def minimal_keys
     compute_minimal_keys if not @minimal_keys
@@ -216,12 +218,12 @@ private
   # Construct an index.  Should not need to be
   # overidden
   def build_index
-    puts "Building index for #{@filename}"
+    say "Building index..."
 
-    # Progress bar...
-    pbar = CLIProgressBar.new(count, true, true)
-    pbar.render_thread(0.1)
-    count = 0
+#     # Progress bar...
+#     pbar = CLIProgressBar.new(count, true, true)
+#     pbar.render_thread(0.1)
+#     count = 0
 
     # Get size in bytes, so we know when we've hit the end.
     file_size = File.size(@filename)
@@ -241,14 +243,16 @@ private
         
         # Save the file offset
         # TODO: ensure random access of the cache is possible
-        $stderr.puts "WARNING: Key on line #{count} of #{@filename} collides with key at byte #{@cache[key]}." if @cache[key]
+        $stderr.puts "WARNING: Key at byte #{line_start} of #{@filename} collides with key at byte #{@cache[key]}." if @cache[key]
         @cache[key] = line_start
         
-        pbar.update_abs(count+=1)
+        # pbar.update_abs(count+=1)
       end
     end
-    pbar.stop_thread
-    print "\n"
+
+    
+    # pbar.stop_thread
+    say "Finished building index"
   end
   
   
@@ -256,9 +260,8 @@ private
     @minimal_keys = {}
 
 
-    puts "Determining index block size for #{@filename}..."
+    say "Calculating minimum index size (0/2)..."
 
-    puts "Building prefix tables..."
     # Set up per-key prefix table and max length measure
     prefix_tables = {}
     max_lengths   = {}
@@ -267,9 +270,9 @@ private
       prefix_tables[k]  = []  # position-usage measure
     }
 
-    # Progress bar
-    pbar      = CLIProgressBar.new(count, true, true)
-    pbar.render_thread(0.1)
+    # # Progress bar
+    # pbar      = CLIProgressBar.new(count, true, true)
+    # pbar.render_thread(0.1)
 
     # Enable garbage collector stress mode, to keep memory clean
     GC.stress = true if LOW_MEMORY 
@@ -293,21 +296,30 @@ private
       }
 
       # count records
-      pbar.update_abs(count += 1)
+      # pbar.update_abs(count += 1)
+      print "\rLine: #{count} " if (count+=1) % OUTPUT_DIVISOR == 0
     end
+    print "\n"
+
+    # OPTIMISATION:
+    # completes file size count if not done already
+    @count = count if not @count 
+    say "Prefix tables complete (1/2)"
 
 
     # And turn it off again
     GC.stress = false  if LOW_MEMORY 
     GC.start           if STRICT_GC
 
-    # Stop the progress bar
-    pbar.stop_thread
-    print "\n"
+    # # Stop the progress bar
+    # pbar.stop_thread
+    # print "\n"
 
-    puts "Computing minimum size for #{self}."
+    say "Computing minimum size (2/2)..."
     # For each key, compute the minimal size from the prefix table
+    count = 0
     prefix_tables.each{|key, prefix|
+      print "\rField: #{count+=1}/#{prefix_tables.size}"
 
       # From the hash of prefixes, determine the shortest possible prefix
       key_size = 0
@@ -330,16 +342,20 @@ private
       # Write the minimal key size for this key
       @minimal_keys[key] = key_size 
     }
+    print "\n"
+
+    say "Minimum index size established."
 
     # Lastly, compute total key length
     @key_length = minimal_keys.values.inject(0, :+)
   end
 
   def build_count
+    say "Counting items..."
     count = 0
-    pbar = CLISpinBar.new(true)
-    pbar.set_status("Counting (#{@filename})...")
-    pbar.render_thread(0.1)
+    # pbar = CLISpinBar.new(true)
+    # pbar.set_status("Counting (#{@filename})...")
+    # pbar.render_thread(0.1)
 
     # Enable garbage collector stress mode, to keep memory clean
     GC.stress = true if LOW_MEMORY 
@@ -353,13 +369,16 @@ private
     GC.stress = false  if LOW_MEMORY 
     GC.start           if STRICT_GC
 
-    pbar.stop_thread
-    print "\n"
+    # pbar.stop_thread
+    # print "\n"
 
+    say "Count complete."
     @count = count
   end
 
   def build_fields
+    say "Building field list..."
+
     csv = CSV.open(@filename, 'r', {:headers => true} )
     # Shift once to get past the header, if it exists
     csv.shift()
@@ -369,20 +388,13 @@ private
     list = row.headers
     csv.close
 
+    say "Field list complete."
+
     # Ensure they're strings
     @fields = list.map!{|x| x.to_s }
   end
 
 end
-
-
-# TODO
-# The merging algorithm to use.
-# TODO: use MergePolicy::whatever.
-# Merging left with add columns from rhs_csv to lhs_csv, where keys match
-# Merging right will add columns from lhs_csv to rhs_csv, where keys match
-# Merging inner will add columns from lhs_csv and rhs_csv, merge where keys match and output BOTH, with empty values
-
 
 module MergePolicy
   class Merge
@@ -391,16 +403,20 @@ module MergePolicy
     end
 
     # Output fields as they will be, i.e. for the header.
+    # Prefix them with rhs. if they would otherwise be dupes.
     def fields
-      @lhs.fields + (@rhs.fields - @rhs.keys).map{|x| "rhs.#{x}"}
+      @lhs.fields + (@rhs.fields - @rhs.keys).map{|f| 
+        @lhs.fields.include?(f) ? "rhs.#{x}" : f
+      }
     end
 
     def to_s
       "Merge"
     end
 
-    def fields
-      (@rhs.fields + @lhs.fields).uniq
+    def accept_line?(lhs_line, rhs_line)
+      puts "WARNING: No merge policy."
+      return false
     end
 
     # Merge a single line
@@ -475,60 +491,121 @@ module MergePolicy
 end
 
 
+def print_usage
+end
 
+def process_commandline_args
+  # Parse command line args
+  if ARGV.length < 5 then
+    puts "USAGE: #{__FILE__} LHS RHS OUT MERGE_POLICY CACHE lkey1 lkey2 lkey3... -- rkey1 rkey2 rkey3..."
+    exit(1)
+  end
+
+  # Load the basics
+  lhs     = ARGV[0]
+  rhs     = ARGV[1]
+  out     = ARGV[2]
+  policy  = ARGV[3]
+  cache   = ARGV[4]
+  lhs_keys = []
+  rhs_keys = []
+
+  if not %w{LeftMerge InnerMerge}.include?(policy) then
+    $stderr.puts "No such merge policy: '#{policy}'"
+    exit(1)
+  end
+
+  if not File.exist?(lhs)
+    $stderr.puts "File does not exist: #{lhs}"
+    exit(1)
+  end
+
+  if not File.exist?(rhs)
+    $stderr.puts "File does not exist: #{rhs}"
+    exit(1)
+  end
+
+  if File.exist?(out)
+    $stderr.puts "WARNING: Output file exists."
+  end
+
+  if not %w{MemoryCache DiskCache} then
+    $stderr.puts "No such cache: '#{cache}'"
+    exit(1)
+  end
+
+  # Load keys into the rhs, lhs key lists
+  arr = lhs_keys
+  ARGV[5..-1].each{|arg|
+    if arg == "--" then
+      arr = rhs_keys
+    else
+      arr << arg
+    end
+  }
+
+  if lhs_keys.empty? then
+    $stderr.puts "No keys given for LHS: using all fields as key."
+  end
+
+  if lhs_keys.empty? then
+    $stderr.puts "No keys given for RHS: using all fields as key."
+  end
+
+  return {:lhs => lhs,
+          :rhs => rhs,
+          :policy => policy,
+          :cache => cache,
+          :lhs_keys => lhs_keys,
+          :rhs_keys => rhs_keys
+         }
+end
+
+# Load config
+config = process_commandline_args 
 
 # TODO: support compound keys from the command line
-lhs     = KeyValueCSV.new(ARGV[0], [ARGV[2]])
-rhs     = KeyValueCSV.new(ARGV[1], [ARGV[3]])
-merge   = eval("MergePolicy::#{ARGV[4] ? ARGV[4] : 'LeftMerge'}.new(lhs, rhs)")
+lhs     = KeyValueCSV.new(config[:lhs], config[:lhs_keys])
+rhs     = KeyValueCSV.new(config[:rhs], config[:rhs_keys])
+merge   = eval("MergePolicy::#{config[:policy]}.new(lhs, rhs)")
 
 
-puts "\nMerging #{lhs} into #{rhs} with policy #{merge}"
-
-
-
-puts "\nFinding fields in each"
-puts "   LHS: #{lhs.fields.join(', ')}"
-puts "   RHS: #{rhs.fields.join(', ')}"
+puts "Merging #{lhs} into #{rhs} with policy '#{merge}'"
+puts ""
+puts "Fields (*keys):"
+puts "   LHS: #{lhs.fields.map{|f| lhs.keys.include?(f) ? '*'+f : f}.join(', ')}"
+puts "   RHS: #{rhs.fields.map{|f| rhs.keys.include?(f) ? '*'+f : f}.join(', ')}"
 puts "Output: #{merge.fields.join(', ')}"
+puts ""
 
 
+# puts "\nCounting records in each (and validating CSV)"
+# puts "   LHS: #{lhs.count}"
+# puts "   RHS: #{rhs.count}"
+# 
+# $stderr.puts "WARNING: RHS file is much larger.  Consider reversing the order of files if you are performing a symmetric join." if rhs.count > lhs.count
+# 
+# puts "Finding Minimal Key Lengths for #{rhs}..."
+# rhs.minimal_keys.each{|k, v|
+#   puts " KEY #{rhs}: #{k} => #{v}"
+# }
+# 
+# 
+# puts "Key size is #{rhs.key_size}B, with #{rhs.count} records this means #{(((rhs.key_size + [rhs.count].pack('l').size)*rhs.count)/1024/1024).round(2)}MB needed for index."
 
-puts "\nCounting records in each (and validating CSV)"
-puts "#{lhs} (LHS): #{lhs.count}"
-puts "#{rhs} (RHS): #{rhs.count}"
-
-
-puts "Finding Minimal Key Lengths for #{rhs}..."
-rhs.minimal_keys.each{|k, v|
-  puts " KEY #{rhs}: #{k} => #{v}"
-}
-
-
-puts "Key size is #{rhs.key_size}B, with #{rhs.count} records this means #{(((rhs.key_size + [rhs.count].pack('l').size)*rhs.count)/1024/1024).round(2)}MB needed for index."
-puts "Type 'm' to use memory, or 'd' to use disk"
-cache = ""
-
-if($stdin.getc == "m") then
-  puts "Using memory!"
-  cache = CacheMethods::MemoryCache
-else
-  puts "Using disk!"
-  cache = CacheMethods::DiskCache
-end
-rhs.cache = cache.new
-
+rhs.cache = eval("CacheMethods::#{config[:cache]}.new")
 
 
 ############## Perform Merge #################################
+count = 0
 CSV.open(CSV_OUT, 'w') do |out_csv|
   out_csv << merge.fields
 
   
   puts "Building output CSV..."
-  pbar = CLIProgressBar.new(lhs.count, true, true)
-  pbar.render_thread(0.1)
-  count = 0
+  # pbar = CLIProgressBar.new(lhs.count, true, true)
+  # pbar.render_thread(0.1)
+  # count = 0
 
 
   # Open a transaction for the rhs file,
@@ -553,15 +630,16 @@ CSV.open(CSV_OUT, 'w') do |out_csv|
       # Merge according to policy and output
       out_csv << merge.merge_line(lhs_vals, rhs_vals) if merge.accept_line?(lhs_vals, rhs_vals)
 
-      pbar.update_abs(count+=1)
+      # pbar.update_abs(count+=1)
+      print "\rLine: #{count} " if (count+=1) % OUTPUT_DIVISOR == 0
     end
   }
 
 
-  pbar.stop_thread
-  print "\n"
+  # pbar.stop_thread
+  # print "\n"
 end
-
+print "\n"
 
 # End
 puts "Done."
