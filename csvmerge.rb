@@ -12,8 +12,6 @@
 #
 # Large CSV merging app.  uses an index construction method to merge CSVs in excess of memory size
 require 'csv'
-require './lib/progress_bar.rb'
-CSV_OUT = "out.csv"
 
 
 LOW_MEMORY      = false     # Keep memory usage to an absolute minimum (not recommended unless you have almost no RAM)
@@ -26,7 +24,6 @@ OUTPUT_DIVISOR  = 512       # print the line every n lines.  Should be a largeis
 
 module CacheMethods
   class Cache
-
     # Add an item to the cache
     #
     # Key will be the CSV minimal key
@@ -55,12 +52,9 @@ module CacheMethods
     # and/or clean up RAM
     def cleanup
     end
-
-
-
-
   end
 
+  # Holds everything in an in-memory hash for speed
   class MemoryCache < Cache
     def initialize
       @cache = {}
@@ -75,6 +69,8 @@ module CacheMethods
     end
   end
 
+  # Holds everything in PStore.
+  # VERY SLOW, but works.
   class DiskCache < Cache
     def initialize(filename="/tmp/csvmerge.tmp", transaction_size=10000)
       require 'pstore'
@@ -117,7 +113,6 @@ module CacheMethods
         }
       }
     end
-
   end
 end
 
