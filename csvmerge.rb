@@ -311,9 +311,12 @@ private
       # If the final character position has only seen one character
       # then this field is NOT unique
       # non_unique_fields << key if prefix[key_size-1].length == 1
-      if prefix[key_size-1].length == 1 then
-        puts "WARNING: field '#{key}' in #{@filename} is uninformative, with an entropy of 0."
-      end
+      # FIXME
+      # if prefix[key_size-1].length == 1 then
+      # end
+       
+      # FIXME
+      # puts "\nWARNING: field '#{key}' in #{@filename} is uninformative, with an entropy of 0." if key_size == 0
 
       # Write the minimal key size for this key
       @minimal_keys[key] = key_size 
@@ -376,7 +379,7 @@ module MergePolicy
     # Prefix them with rhs. if they would otherwise be dupes.
     def fields
       @lhs.fields + (@rhs.fields - @rhs.keys).map{|f| 
-        @lhs.fields.include?(f) ? "rhs.#{x}" : f
+        @lhs.fields.include?(f) ? "rhs.#{f}" : f
       }
     end
 
@@ -394,9 +397,11 @@ module MergePolicy
       line = []
 
       # Add all left hand side items
-      @rhs.fields.each{ |f| line << rhs_line[f] }
+      @lhs.fields.each{ |f| line << lhs_line[f] }
       # and only non-key fields from the RHS
-      (@lhs.fields - @lhs.keys).each{|f| line << lhs_line[f] }
+      (@rhs.fields - @rhs.keys).each{|f| 
+        line << rhs_line[f] 
+      }
 
       return line
     end
@@ -515,10 +520,11 @@ def process_commandline_args
     $stderr.puts "No keys given for RHS: using all fields as key."
   end
 
-  return {:lhs => lhs,
-          :rhs => rhs,
-          :policy => policy,
-          :cache => cache,
+  return {:lhs      => lhs,
+          :rhs      => rhs,
+          :output   => out,
+          :policy   => policy,
+          :cache    => cache,
           :lhs_keys => lhs_keys,
           :rhs_keys => rhs_keys
          }
@@ -561,7 +567,7 @@ rhs.cache = eval("CacheMethods::#{config[:cache]}.new")
 
 ############## Perform Merge #################################
 count = 0
-CSV.open(CSV_OUT, 'w') do |out_csv|
+CSV.open(config[:output], 'w') do |out_csv|
   out_csv << merge.fields
 
   
@@ -593,6 +599,7 @@ CSV.open(CSV_OUT, 'w') do |out_csv|
     end
   }
 end
+print "\rLine: #{count} " # Ensure we always print the last line number for clarity
 print "\n"
 
 # End
