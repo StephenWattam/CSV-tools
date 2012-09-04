@@ -1,0 +1,180 @@
+#!/usr/bin/env ruby
+
+require 'fileutils'
+require 'shellwords'
+require 'csv'
+
+HEADERS = true
+BUFFER_SIZE = 1024*1024*10  # 10MB, seems fast
+SHELL_APPEND = ">>"   # FIXME: make this work with different shells
+
+def which(cmd)
+  # Thanks to http://stackoverflow.com/questions/2108727/which-in-ruby-checking-if-program-exists-in-path-from-ruby
+  exts = ENV['PATHEXT'] ? ENV['PATHEXT'].split(';') : ['']
+  ENV['PATH'].split(File::PATH_SEPARATOR).each do |path|
+    exts.each { |ext|
+      exe = "#{path}#{File::SEPARATOR}#{cmd}#{ext}"
+      return exe if File.executable?(exe)
+    }
+  end
+  return nil
+end
+
+
+
+def get_fields(filename) 
+  csv = CSV.open(filename, 'r', {:headers => true} )
+  # Shift once to get past the header, if it exists
+  csv.shift()
+  row = csv.shift()
+
+  # Then list headers and close
+  list = row.headers
+  csv.close
+
+  # Ensure they're strings
+  return list.map!{|x| x.to_s }
+end
+
+
+
+def parse_command_line
+  if ARGV.length < 2 then
+    $stderr.puts "USAGE: #{__FILE__} [-r] in.csv [in2.csv [in3.csv [...]]] out.csv"
+    $stderr.puts ""
+    $stderr.puts "OPTIONS:"
+    $stderr.puts " -r  Use ruby libs instead of shell and tail"
+    exit(1)
+  end
+
+  # Skip over -n if given
+  offset = (ARGV[0] == "-r") ? 1 : 0
+  native = (offset == 1) and which('tail')
+
+  if offset == 1 and not native then
+    $stderr.puts "WARNING: no shell libs found.  Falling back to ruby."
+  end
+
+  # All files are "in" apart from last one
+  in_files = ARGV[offset..-2]
+  out_file = ARGV[-1]
+
+  # Check each of the input files exists
+  in_files.each{|x|
+    if not File.exist?(x) then
+      $stderr.puts "File not found: #{x}"
+      exit(1)
+    end
+
+    if x == out_file then
+      $stderr.puts "Input file #{x} cannot be the same as output file."
+      exit(1)
+    end
+  }
+
+  return in_files, out_file, native
+end
+
+
+
+in_files, out_file, native = parse_command_line
+
+
+
+
+puts "Outputting to #{out_file}"
+puts "Using #{native ? 'ruby libs (slower)' : 'shell tools (faster)'}"
+
+
+
+# Check fields are the same
+fields = in_files.map{|f| get_fields(f) }
+
+# Check they're the same length
+if not fields.map{|x| x.length == fields[0].length }.inject(true, :==)  then
+  $stderr.puts "ERROR: Not all files have the same number of fields."
+  $stderr.puts "       Continuing would be meaningless.  Use an outer join instead."
+  in_files.each_index{|k| $stderr.puts "'#{in_files[k]}' => #{fields[k].length} field#{fields[k].length == 1 ? '' : 's'}"}
+  exit(1)
+end
+
+
+# Loop over 0...max_number_of_headers
+# and ensure that each file has the same ones
+# in the same order
+fields.map{|hs| hs.length}.max.times{ |i|
+  all_files_headers = fields.map{|hs| hs[i] }
+
+  # Then check they're all the same value
+  if not all_files_headers.map{|x| x == all_files_headers[0]}.reduce(:==) then
+    $stderr.puts "WARNING: Field name for column #{i+1} differs between files (#{all_files_headers.map{|s| "'#{s}'"}.join(', ')})"
+  end
+
+}
+
+
+
+# Check sizes
+sizes     = in_files.map{|f| File.size(f) }
+deviance  = sizes.map{|x| x - (sizes.inject(0, :+) / sizes.length) }
+if deviance[0] < 0 then
+  $stderr.puts "WARNING: first file is not the largest.  This will (slightly) harm speed."
+end
+
+
+
+
+# First, copy the first in file onto the out file.
+# This should be very fast
+puts "Concatenating #{in_files[0]}..."
+FileUtils.cp(in_files[0], out_file)
+
+
+
+if native then
+
+
+  # Then cat each of the files onto the end of that one
+  of = File.open(out_file, 'w+')
+
+  in_files[1..-1].each{|file|
+    puts "Concatenating #{file}..."
+
+    # Where does the header end?
+    end_header = 0
+
+    # The file must be opened, then closed
+    # again to allow for unbuffered mode later.
+    if HEADERS then
+      inf = File.open(file, 'r')
+      inf.seek(0)
+      inf.readline 
+      end_header = inf.tell
+      inf.close
+    end
+
+    # Open the file and seek past the header
+    inf = File.open(inf, 'r')
+    inf.sysseek(end_header)
+
+    # then copy in chunks, unbuffered.
+    begin
+      while(of.syswrite(inf.sysread(BUFFER_SIZE)))do
+      end
+    rescue EOFError => e
+    end
+
+    # Lastly, close.
+    inf.close
+  }
+
+  of.close
+
+else
+  in_files[1..-1].each{|inf|
+    puts "Concatenating #{inf}..."
+
+    `tail -n +#{HEADERS ? 2 : 1} #{Shellwords.escape(inf)} #{SHELL_APPEND} #{Shellwords.escape(out_file)}`
+  }
+end
+puts "Done."
