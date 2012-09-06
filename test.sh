@@ -8,3 +8,7 @@
 
 
 ./csvcat test/sample_orig.csv test/sample_huge.csv test/sample_addit.csv out.csv
+
+
+
+./csvfilter test/citations.csv out.csv 100 "" FieldNotNull citations -- AllFieldsNotNull

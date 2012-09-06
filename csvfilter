@@ -1,0 +1,246 @@
+#!/usr/bin/env ruby
+
+MAX_CACHE_SIZE = 1000000000 # a billion
+SEPARATORS = %w{--}
+FILTERS = %{FieldNotNull AllFieldsNotNull FieldInteger FieldRegexp}
+OUTPUT_DIVISOR = 256
+
+require 'csv'
+
+# CSV Filters
+module CSVFilters
+  class Filter
+    # Filter a line
+    # return true to keep,
+    # false to ditch.
+    def filter(line)
+      return true
+    end
+
+    def to_s
+      "#{self.class}"
+    end
+  end
+
+  class FieldFilter < Filter
+    def initialize(field)
+      @field = field
+    end
+
+    def filter(line)
+      return filter_field(line.field(@field))
+    end
+
+    def filter_field(val)
+      puts "STUB: filter_field in FieldFilter"
+      return true
+    end
+
+    def to_s
+      "#{super.to_s} (field: #{@field})"
+    end
+  end
+
+
+  # ----------------------------------------------
+
+  class FieldNotNull < FieldFilter 
+    def filter_field(val)
+      not (val == nil or val.length == 0)
+    end
+  end
+
+  class AllFieldsNotNull < Filter
+    def filter(line)
+      line.each{|f| return false if f == nil or f.length == 0 }
+      return true
+    end
+  end
+
+  class FieldInteger < FieldFilter 
+    def filter_field(val)
+      return val.to_i.to_s == val.to_s
+    end
+  end
+
+  class FieldRegexp < FieldFilter
+    def initialize(field, rx)
+      super(field)
+      @rx = Regexp.new(rx)
+    end
+
+    def filter_field(val)
+      val.to_s =~ @rx
+    end
+  end
+end
+
+# A hash that counts its keys and
+# removes the oldest entry whenb it exceeds the
+# given maximum size.
+class CSVCache
+  def initialize(max_size)
+    return DummyCSVCache.new if max_size == 0
+    @max_size   = max_size
+    @size       = 0
+    @keys       = []        # Keep keys in order to bump off the oldest one
+    @store      = Hash.new
+  end
+
+  # Retrieve a key
+  def [](k)
+    @store[k]
+  end
+
+  # Add an item.
+  # Acts like a queue after a certain number have been added
+  def []=(k, v)
+    @size += 1
+    if @size > @max_size then
+      @store.delete(@keys.take(1))
+      @size -= 1
+    end
+
+    @store[k] = v
+    @keys << k
+  end
+
+  # Simulates a cache but with no data in it.
+  # faster than having a real cache with no data in it
+  class DummyCSVCache
+    def []=(k,v)
+    end
+    def []
+      return nil
+    end
+  end
+end
+
+
+
+
+# Filters a CSV according to some rules, only outputting those that == true
+def parse_command_line
+  if ARGV.length < 3 then
+    $stderr.puts "USAGE: #{__FILE__} in.csv out.csv cache_size LOGIC filtername [opts] -- filter [opts] -- ..."
+    $stderr.puts ""
+    $stderr.puts "LOGIC: a logical expression using filter output, "
+    $stderr.puts "       i.e. '$1 and not $2'"
+    $stderr.puts "       The variables match up with each filter in the"
+    $stderr.puts "       order specified."
+    exit(1)
+  end
+
+  in_file = ARGV[0]
+  if not File.exist?(in_file) then
+    $stderr.puts "File not found: #{in_file}"
+    exit(1)
+  end
+
+  out_file = ARGV[1]
+  if File.exist?(out_file) then
+    $stderr.puts "WARNING: Output file exists."
+  end
+
+  cache_size = ARGV[2].to_i
+  if cache_size <= 0 or cache_size > MAX_CACHE_SIZE then
+    $stderr.puts "Invalid cache size: #{cache_size}"
+    exit(1)
+  end
+
+  # Build a list of filters, arguments 
+  filter_args             = []
+  current_filter      = []
+  ARGV[4..-1].each{|f|
+    # on sep, write back
+    if SEPARATORS.include?(f) then
+      filter_args << current_filter
+      current_filter  = []
+    else
+      # check it's a valid filter
+      if FILTERS.include?(f) or not current_filter.length == 0
+        current_filter  << f
+      else
+        $stderr.puts "Invalid filter: #{f}"
+        exit(1)
+      end
+    end
+  }
+  filter_args << current_filter if current_filter.length > 0  # so we don't need to end with a separator
+
+
+  # Construct filter objects
+  count = 0
+  filters = []
+  filter_args.each{|f|
+    filters         << eval("CSVFilters::#{f[0]}.new(*f[1..-1])")
+  }
+
+
+  # Load logic string and set if it's blank
+  logic = ARGV[3]
+  if logic.length == 0
+    $stderr.puts "Constructing logic automatically."
+    logic = filters.each_index.map{|i| "$#{i}"}.join(" and ")
+  end
+
+
+  # Return vars
+  return in_file, out_file, cache_size, logic, filters
+end
+
+
+def parse_logic(logic, filters)
+end
+
+
+in_file, out_file, cache_size, logic, filters = parse_command_line
+
+# Process filters
+puts "Filtering #{in_file}"
+puts "Filters: "
+filters.each{|f|
+  puts "    #{f}"
+} 
+puts "Logic: #{logic}"
+puts "\n"
+
+
+# construct logic expression
+logic = logic.clone
+filters.each_index{|i|
+  logic.gsub!("$#{i}", "filters[#{i}].filter(row_in)")
+}
+
+
+
+#
+count = 0
+rejected = 0
+accepted = 0
+
+CSV.open(out_file, 'w') do |csvout|
+  CSV.foreach(in_file, {:headers => true}) do |row_in|
+    
+
+    # Check against the logic expression
+    if eval(logic)
+      csvout << row_in 
+      accepted += 1
+    else
+      rejected += 1
+    end
+
+    # Lastly, report progress
+    print "\rLine: #{count}      Accepted: #{accepted}      Rejected: #{rejected} " if (count+=1) % OUTPUT_DIVISOR == 0
+  end
+end
+print "\rLine: #{count}      Accepted: #{accepted}      Rejected: #{rejected} "
+print "\n"
+
+
+# puts "Filter activity summary:"
+# filters.each{|f|
+#   puts "    #{f} => #{f.accepted}/#{f.seen} accepted (#{((f.seen.to_i/f.accepted.to_i)*100).round(2)}%)"
+
+print "Done."
