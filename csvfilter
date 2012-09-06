@@ -1,4 +1,5 @@
 #!/usr/bin/env ruby
+# encoding: utf-8
 
 MAX_CACHE_SIZE = 1000000000 # a billion
 SEPARATORS = %w{--}
@@ -178,9 +179,9 @@ def parse_command_line
 
 
   # Load logic string and set if it's blank
-  logic = ARGV[3]
+  logic = ARGV[3].dup
   if logic.length == 0
-    $stderr.puts "Constructing logic automatically."
+    $stderr.puts "Constructing logic automatically using 'and'."
     logic = filters.each_index.map{|i| "$#{i}"}.join(" and ")
   end
 
@@ -190,26 +191,34 @@ def parse_command_line
 end
 
 
-def parse_logic(logic, filters)
-end
-
 
 in_file, out_file, cache_size, logic, filters = parse_command_line
+
+# TODO
+if cache_size > 0 then
+  $stderr.puts "WARNING: Cache unimplemented."
+end
+
 
 # Process filters
 puts "Filtering #{in_file}"
 puts "Filters: "
+count = 0
 filters.each{|f|
-  puts "    #{f}"
+  puts "    #{count}. #{f}"
+  count += 1
 } 
-puts "Logic: #{logic}"
+puts "Logic: '#{logic}'"
 puts "\n"
 
 
-# construct logic expression
-logic = logic.clone
+# construct logic expression from the $0 syntax
 filters.each_index{|i|
-  logic.gsub!("$#{i}", "filters[#{i}].filter(row_in)")
+  if not logic.include?("_#{i}_") then
+    $stderr.puts "ERROR: Filter #{i} will never be run, as it is not in the logic expression."
+    exit(1)
+  end
+  logic.gsub!("_#{i}_", "filters[#{i}].filter(row_in)")
 }
 
 
@@ -220,7 +229,7 @@ rejected = 0
 accepted = 0
 
 CSV.open(out_file, 'w') do |csvout|
-  CSV.foreach(in_file, {:headers => true}) do |row_in|
+  CSV.foreach(in_file, :encoding => 'utf-8', :headers => true) do |row_in|
     
 
     # Check against the logic expression
@@ -243,4 +252,4 @@ print "\n"
 # filters.each{|f|
 #   puts "    #{f} => #{f.accepted}/#{f.seen} accepted (#{((f.seen.to_i/f.accepted.to_i)*100).round(2)}%)"
 
-print "Done."
+puts "Done."

@@ -221,6 +221,7 @@ private
       line_start = csvin.tell
 
       # Then read line
+      count = 0
       while((line_start = csvin.tell) < file_size) do
 
         # Load the line
@@ -233,9 +234,11 @@ private
         # TODO: ensure random access of the cache is possible
         $stderr.puts "WARNING: Key at byte #{line_start} of #{@filename} collides with key at byte #{@cache[key]}." if @cache[key]
         @cache[key] = line_start
+
+        print "\rLine: #{count+=1}  "
       end
     end
-
+    print "\n"
     
     say "Finished building index"
   end
@@ -279,6 +282,7 @@ private
       # count records
       print "\rLine: #{count} " if (count+=1) % OUTPUT_DIVISOR == 0
     end
+    print "\rLine: #{count} " # ensure we print the last number to avoid confusion
     print "\n"
 
     # OPTIMISATION:
@@ -588,7 +592,6 @@ CSV.open(config[:output], 'w') do |out_csv|
       # and low on memory
       rhs_vals    = rhs[key] || {}
 
-        
       # Ensure the RHS vals are in hash form 
       lhs_vals    = lhs_row.to_hash
 
