@@ -23,7 +23,7 @@ end
 
 
 def get_fields(filename) 
-  csv = CSV.open(filename, 'r', {:headers => true} )
+  csv = CSV.open(filename, 'r', :encoding => 'utf-8', :headers => true )
   # Shift once to get past the header, if it exists
   csv.shift()
   row = csv.shift()

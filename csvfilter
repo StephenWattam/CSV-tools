@@ -8,6 +8,24 @@ OUTPUT_DIVISOR = 256
 
 require 'csv'
 
+# Read the fields in a CSV
+def get_fields(filename) 
+  csv = CSV.open(filename, 'r', :encoding => 'utf-8', :headers => true)
+  # Shift once to get past the header, if it exists
+  csv.shift()
+  row = csv.shift()
+
+  # Then list headers and close
+  list = row.headers
+  csv.close
+
+  # Ensure they're strings
+  return list.map!{|x| x.to_s }
+end
+
+
+
+
 # CSV Filters
 module CSVFilters
   class Filter
@@ -144,7 +162,7 @@ def parse_command_line
   end
 
   cache_size = ARGV[2].to_i
-  if cache_size <= 0 or cache_size > MAX_CACHE_SIZE then
+  if cache_size < 0 or cache_size > MAX_CACHE_SIZE then
     $stderr.puts "Invalid cache size: #{cache_size}"
     exit(1)
   end
@@ -182,7 +200,7 @@ def parse_command_line
   logic = ARGV[3].dup
   if logic.length == 0
     $stderr.puts "Constructing logic automatically using 'and'."
-    logic = filters.each_index.map{|i| "$#{i}"}.join(" and ")
+    logic = filters.each_index.map{|i| "_#{i}_"}.join(" and ")
   end
 
 
@@ -229,6 +247,9 @@ rejected = 0
 accepted = 0
 
 CSV.open(out_file, 'w') do |csvout|
+
+  csvout << get_fields(in_file)
+
   CSV.foreach(in_file, :encoding => 'utf-8', :headers => true) do |row_in|
     
 

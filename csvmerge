@@ -199,7 +199,7 @@ class KeyValueCSV
     # Seek to the location in the cache and return a line
     if seek_to = @cache[k] then
       @handle.seek(seek_to)
-      return CSV.parse_line(@handle.readline, {:headers => fields}).to_hash
+      return CSV.parse_line(@handle.readline, :encoding => 'utf-8', :headers => fields).to_hash
     else
       return nil
     end
@@ -215,7 +215,7 @@ private
 
     # Get size in bytes, so we know when we've hit the end.
     file_size = File.size(@filename)
-    CSV.open(@filename, {:headers => true}) do |csvin|
+    CSV.open(@filename, :encoding => 'utf-8', :headers => true) do |csvin|
 
       # Get byte offset
       line_start = csvin.tell
@@ -262,7 +262,7 @@ private
     GC.stress = true if LOW_MEMORY 
 
     count = 0
-    CSV.foreach(@filename, {:headers => true}) do |csvin|
+    CSV.foreach(@filename, :encoding => 'utf-8', :headers => true) do |csvin|
       prefix_tables.each{ |key, prefix|
         val = csvin.field(key).to_s
 
@@ -340,7 +340,7 @@ private
     # Enable garbage collector stress mode, to keep memory clean
     GC.stress = true if LOW_MEMORY 
 
-    count = CSV.read(@filename, {:headers => true}).length
+    count = CSV.read(@filename,  :encoding => 'utf-8', :headers => true).length
     # CSV.foreach(@filename, {:headers => true}) do |csvin|
     #   count += 1
     # end
@@ -356,7 +356,7 @@ private
   def build_fields
     say "Building field list..."
 
-    csv = CSV.open(@filename, 'r', {:headers => true} )
+    csv = CSV.open(@filename, 'r', :encoding => 'utf-8', :headers => true )
     # Shift once to get past the header, if it exists
     csv.shift()
     row = csv.shift()
@@ -582,7 +582,7 @@ CSV.open(config[:output], 'w') do |out_csv|
   rhs.seek_retrieval{
 
     # The one we don't have the index for
-    CSV.foreach(lhs.filename, {:headers => true}) do |lhs_row|
+    CSV.foreach(lhs.filename, :encoding => 'utf-8', :headers => true) do |lhs_row|
 
       # Generate a key from the row
       key         = rhs.get_minimal_key(lhs_row)

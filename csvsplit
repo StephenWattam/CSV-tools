@@ -58,7 +58,7 @@ puts "Done."
 
 puts "Parsing output..."
 count = 0
-CSV.foreach(filename, {:headers => true}) do |cin|
+CSV.foreach(filename, :encoding => 'utf-8', :headers => true) do |cin|
 
   # Loop through outputs and output this line.
   output_files.each{|file, opts|
