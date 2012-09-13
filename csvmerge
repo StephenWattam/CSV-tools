@@ -585,7 +585,7 @@ CSV.open(config[:output], 'w') do |out_csv|
     CSV.foreach(lhs.filename, :encoding => 'utf-8', :headers => true) do |lhs_row|
 
       # Generate a key from the row
-      key         = rhs.get_minimal_key(lhs_row)
+      key         = lhs.get_minimal_key(lhs_row)
     
       # Look up the value from the LHS cache
       # This uses file seeking, so is quickish
